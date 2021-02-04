@@ -1,0 +1,632 @@
+---
+title: "Projet Transdev"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Projet transdev
+On dispose de données de validation de titres de transport, à Toulon, en 2019. Le but est de proposer une modélisation du traffic suivant les moments et les lieux (lignes ou arrêts) afin de déterminer des possibilités d'optimisation du service ferroviaire.
+
+
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(sf)
+library(caret)
+library(class)
+```
+
+## 1°) Lecture des données et descriptions
+
+### 1.1°) Lecture
+
+
+#### 1.1.1°) Extraction des données
+```{r}
+df <- read.csv("./validations_Toulon_2019.csv", header = TRUE, sep= ";", na.strings = "")
+```
+
+#### 1.1.2°) Gestion des dates
+
+Transformation des dates en format Date ou datetime.
+```{r}
+df %<>%
+  mutate(DAY= as.Date(DAY, format= "%d/%m/%Y"))
+df %<>%
+  mutate(DATETIME= as_datetime(DATETIME, format= "%Y-%m-%d %H:%M:%S"))
+df %<>%
+  mutate(HORAIRE= as_datetime(HORAIRE, format= "%H:%M:%S"))
+```
+
+
+#### 1.1.3) Renommage de certaines variables (TYPE.JOUR et Nom_arret), suppression de PH et création de FERIE et SCOLAIRE (2 autres variables)
+On renomme des colonnes pour pouvoir les appeler plus facilement. On décompose également la variable PH qui désigne les jours spéciaux (fériés, scolaires=PVS, fériés ou jour de l'an, NAN) en plusieurs variables : FERIE (=0 si pas férié, =1 sinon), SCOLAIRE (=1 si vacances, =0 sinon). Ici, on crée la variable FERIE, dans le bloc d'après on lui attribue les bonnes valeurs et dans le bloc suivant, on va créer la variable SCOLAIRE et lui affecter aussi les bonnes valeurs.
+```{r}
+names(df)[names(df)=="TYPE.JOUR"] <- "TYPEJOUR"
+names(df)[names(df)=="Nom_arret"] <- "ARRET"
+names(df)[names(df)=="PH"] <- "FERIE"
+```
+
+
+Complétion de la variable FERIE
+```{r}
+df$FERIE <- "0"
+df <- df %>% mutate(FERIE = replace(FERIE, which(DAY %in% c(as.Date("2019-01-01"),as.Date("2019-04-21"),as.Date("2019-04-22"),as.Date("2019-05-01"),as.Date("2019-05-08"),as.Date("2019-05-30"),as.Date("2019-06-09"),as.Date("2019-06-10"),as.Date("2019-07-14"),as.Date("2019-08-15"),as.Date("2019-11-01"),as.Date("2019-11-11"),as.Date("2019-12-25"))), "1"))
+df$FERIE = as.integer(df$FERIE)
+```
+
+Création et complétion de la variable SCOLAIRE. Pour cela, on commence par repérer tous les jours de vacances scolaires et on les met dans le vecteur vacances.
+```{r}
+vacances = seq(as.Date("2019-01-01"), by = "day", length.out = 6)
+vacances = c(vacances,seq(as.Date("2019-02-09"), by = "day", length.out = 16))
+vacances = c(vacances,seq(as.Date("2019-04-06"), by = "day", length.out = 17))
+vacances = c(vacances,seq(as.Date("2019-05-29"), by = "day", length.out = 5))
+vacances = c(vacances,seq(as.Date("2019-07-06"), by = "day", length.out = 58))
+vacances = c(vacances,seq(as.Date("2019-10-19"), by = "day", length.out = 16))
+vacances = c(vacances,seq(as.Date("2019-12-21"), by = "day", length.out = 11))
+
+
+df$SCOLAIRE  = 0
+df <- df %>% mutate(SCOLAIRE = replace(SCOLAIRE, which(DAY %in% vacances), 1))
+df$SCOLAIRE = as.integer(df$SCOLAIRE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+### 1.2°) Analyse des données, complétion et premières descriptions
+
+#### 1.2.1°) Traitement des données manquantes
+
+Regardons les données qui restent manquantes :
+```{r}
+nbBusNA = sum(is.na(df$CBus))
+nbRAPIDONA = sum(is.na(df$Code_RAPIDO))
+nbArretsNA = sum(is.na(df$ARRET))
+nblatNA = sum(is.na(df$Latitude))
+nblongNA = sum(is.na(df$Longitude))
+nbidentNA = sum(is.na(df$IDENT))
+nbtypejourNA = sum(is.na(df$TYPEJOUR))
+nbtypetransactionNA = sum(is.na(df$TYPETRANSACTION))
+nbsensNA = sum(is.na(df$SENS))
+print(paste0("Il y a ", nbRAPIDONA, " code rapido, arrêts, longitude, latitude, ident qui sont manquants. Et aussi ", nbsensNA, " types de jour et sens qui manquent."))
+```
+
+
+
+On peut facilement compléter les jours manquants :
+```{r}
+df$TYPEJOUR <- weekdays(df$DAY)
+```
+
+(Maintenant, on transforme les jours de la semaine en factors afin de pouvoir les manipuler plus vite par la suite.) ==> pas dit que ce soit bien en fait
+```{r}
+# df %<>%
+#   mutate(TYPEJOUR = fct_relevel(TYPEJOUR,c("Lundi","Mardi","Mercredi","Jeudi","Vendredi","Samedi","Dimanche")))
+```
+
+Pour les autres valeurs manquantes, on pourrait vouloir les supprimer. Cependant, cela va fausser les statistiques étant donné qu'on a déjà toutes les lignes et tous les instants. On peut donc exploiter cette information en attribuant à chaque validation avec observations manquantes des valeurs obtenues par tirage probabiliste pondéré sur l'année selon la fréquence des autres valeurs obtenues. Par exemple, si on a un arrêt manquant et, sur la même ligne, 1/3 des voyages qui passent par l'arrêt A, 1/3 par l'arrêt B et 1/3 par l'arrêt C alors  l'arrêt manquant va être choisi à A, B ou C avec probabilité 1/3. Pour avoir de la cohérence entre les différentes colonnes, on va même faire le tirage aléatoire par rapport à l'ensemble des lignes complètes (afin de considérer toutes les colonnes en même temps plutôt que de les compléter 1 après 1 indépendamment des autres).
+
+- D'abord, on repère les rangs comportant des valeurs manquantes.
+
+
+rangsAvecNA = which(is.na(df$ARRET), arr.ind=TRUE)
+
+
+- Ensuite, on boucle sur les lignes de transport en repérant tous les rangs avec quelques données manquantes et tous ceux sans données manquantes. Puis, on impute les données manquantes à l'aide des données des lignes complètes. 
+
+
+
+listeLigne = unique(df$LIGNE)# donne la liste des lignes de bus
+for (ligne in listeLigne[1:2]){# on boucle sur les 2 premières lignes pour commencer
+  print(ligne)
+  listeObsLigne = which(df$LIGNE==ligne, arr.ind=TRUE)
+  listeObsLigneNA = intersect(listeObsLigne,rangsAvecNA)
+  listeObsLigneNonNA = setdiff(listeObsLigne,rangsAvecNA)
+  for (ligneNA in listeObsLigneNA[1:77]){
+    print(ligneNA)
+    obsDeRemplacement = sample(listeObsLigneNonNA,1)
+    if (is.na(df$SENS[ligneNA])){
+      df[ligneNA,c("Code_RAPIDO","ARRET","Latitude","Longitude","IDENT","SENS")] = df[obsDeRemplacement,c("Code_RAPIDO","ARRET","Latitude","Longitude","IDENT","SENS")]
+    }
+    else{
+      df[ligneNA,c("Code_RAPIDO","ARRET","Latitude","Longitude","IDENT")] = df[obsDeRemplacement,c("Code_RAPIDO","ARRET","Latitude","Longitude","IDENT")]
+    }
+  }
+}
+
+Cette stratégie a un temps d'exécution beaucoup trop long : on aurait besoin de 500h pour la faire tourner. On supprime donc les données manquantes et on reviendra plus tard sur l'imputation.
+
+```{r}
+df = na.omit(df)
+```
+Rque : en regardant la largeur du tableau après avoir tirer les na, on s'aperçoit que les valeurs manquantes étaient bien sur les mêmes 1750152 lignes (=nb de lignes avec données d'arrêts manquantes).
+
+#### 1.2.2°) Premières descriptions des données
+
+##### 1.2.2.1°) Nombres de valeurs prises par chaque variable
+
+Recherche du nombre de valeurs possibles pour les différents paramètres :
+```{r}
+nbLignes = length(levels(as.factor(df$LIGNE)))
+print(paste0("Il y a ", nbLignes," lignes."))
+nbBus = length(levels(as.factor(df$BUS)))
+print(paste0("Il y a ", nbBus," bus"))
+nbArrets = length(levels(as.factor(df$ARRET)))
+print(paste0("Il y a ",nbArrets," arrêts"))
+nbTypesTransactions = length(levels(as.factor(df$TYPETRANSACTION)))
+print(paste0("Il y a ",nbTypesTransactions," types de transactions:"))
+print(levels(as.factor(df$TYPETRANSACTION)))
+```
+
+##### 1.2.2.2°) Barplot de la fréquentation dans la semaine
+Regardons comment les trajets se répartissent en pourcentages sur les jours de la semaine :
+```{r}
+StatsJours = as.data.frame(table(unlist(df$TYPEJOUR)))
+StatsJours[,2] = StatsJours[,2]/(length(df[,1]))
+StatsJours
+```
+
+```{r}
+barplot(c(Lundi=StatsJours[3,2],Mardi=StatsJours[4,2],Mercredi=StatsJours[5,2],Jeudi=StatsJours[2,2],Vendredi=StatsJours[7,2],Samedi=StatsJours[6,2],Dimanche = StatsJours[1,2]),col="lightgreen", main = "Barplot des proportions de validation chaque jour de semaine ")
+grid(nx = NA, ny = NULL, lty = 2, col = "gray", lwd = 1)
+```
+##### 1.2.2.3°) Barplot de la fréquentation sur une journée de semaine
+
+###### En moyenne sur lundi, mardi, mercredi, jeudi et vendredi
+Création d'une nouvelle variable correspondant à l'heure, dans le but d'afficher la distribution journalière :
+```{r}
+x = as.POSIXct(x = df$HORAIRE, format = "%Y-%m-%d %H:%M:%S")
+df$HEURE <- format(x, "%H")
+```
+
+Création d'un dataframe avec les fréquences de validations par heure sur un jour de semaine :
+```{r}
+StatsSemaine = as.data.frame(table(unlist(filter(df, TYPEJOUR =="Lundi" | TYPEJOUR == "Mardi" | TYPEJOUR == "Mercredi" | TYPEJOUR == "Jeudi" | TYPEJOUR == "Vendredi" )$HEURE)))
+
+StatsSemaine[,2] = StatsSemaine[,2]/(length(filter(df, TYPEJOUR =="Lundi" | TYPEJOUR == "Mardi" | TYPEJOUR == "Mercredi" | TYPEJOUR == "Jeudi" | TYPEJOUR == "Vendredi" )$HEURE))
+```
+
+```{r}
+StatsSemaine
+```
+
+```{r}
+p<-ggplot(data=StatsSemaine, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution des validations sur un jour de semaine") + xlab("Heure") + ylab("Fréquence")
+p
+```
+
+On remarque que les heures les plus fréquentées sont évidemment les heures de pointe (de 7h à 9h et de 16h à 18h).
+
+Regrouper en tranches de 2h ?
+
+###### Pour jeudi
+```{r}
+StatsJeudi = as.data.frame(table(unlist(filter(df, TYPEJOUR == "Jeudi" )$HEURE)))
+
+StatsJeudi[,2] = StatsJeudi[,2]/(length(filter(df, TYPEJOUR == "Jeudi"  )$HEURE))
+```
+
+```{r}
+pjeudi<-ggplot(data=StatsJeudi, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution des validations sur un jeudi") + xlab("Heure") + ylab("Fréquence")
+pjeudi
+```
+###### Pour mardi
+```{r}
+StatsMardi = as.data.frame(table(unlist(filter(df, TYPEJOUR == "Mardi" )$HEURE)))
+
+StatsMardi[,2] = StatsMardi[,2]/(length(filter(df, TYPEJOUR == "Mardi"  )$HEURE))
+```
+
+```{r}
+pmardi<-ggplot(data=StatsMardi, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution des validations sur un mardi") + xlab("Heure") + ylab("Fréquence")
+pmardi
+```
+
+
+
+##### 1.2.2.4°) Barplot de la fréquentation sur un jour de week-end
+
+
+###### En général
+Création d'un dataframe avec les fréquences de validations par heure sur un jour de week-end :
+```{r}
+StatsHeuresWE = as.data.frame(table(unlist(filter(df, TYPEJOUR == "Dimanche" | TYPEJOUR == "Samedi" )$HEURE)))
+StatsHeuresWE[,2] = StatsHeuresWE[,2]/(length(filter(df, TYPEJOUR == "Dimanche" | TYPEJOUR == "Samedi" )$HEURE))
+```
+
+```{r}
+p<-ggplot(data=StatsHeuresWE, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution des validations sur un jour le week-end") + xlab("Heure") + ylab("Fréquence")
+p
+```
+
+- Le matin, les heures les plus fréquentées se situent un peu plus tard qu'en semaine (de 10h à 12h) 
+- A peu près la même distribution le soir
+
+###### Pour samedi
+```{r}
+StatsSamedi = as.data.frame(table(unlist(filter(df, TYPEJOUR == "Samedi" )$HEURE)))
+
+StatsSamedi[,2] = StatsSamedi[,2]/(length(filter(df, TYPEJOUR == "Samedi"  )$HEURE))
+```
+
+```{r}
+psamedi<-ggplot(data=StatsSamedi, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution des validations sur un samedi") + xlab("Heure") + ylab("Fréquence")
+psamedi
+```
+
+##### 1.2.2.5°) Barplot de la fréquentation mensuelle
+
+Création d'une nouvelle variable correspondant au jour du mois, dans le but d'afficher la distribution mensuelle des validations :
+```{r}
+y = as.POSIXlt(x = df$DATETIME, format = "%Y-%m-%d %H:%M:%S")
+df$DAYNUMBER <- format(y, "%d")
+```
+
+Création d'un dataframe avec les fréquences de validations par jour du mois :
+```{r}
+StatsJourMois = as.data.frame(table(unlist(df$DAYNUMBER)))
+StatsJourMois[,2] = StatsJourMois[,2]/(length(df[,1]))
+```
+
+```{r}
+p<-ggplot(data=StatsJourMois, aes(x=Var1, y=Freq)) +
+  geom_bar(stat="identity", color="black", fill='lightgreen') + ggtitle("Distribution mensuelle des validations") + xlab("Jour du mois") + ylab("Fréquence")
+p
+```
+
+- Regroupement en semaine dans le mois ?
+- Fréquence légèrement + faible le 1er du mois ?
+- Fréquence plus faible le 31ème jour car pas de 31ème jour dans certains mois. 
+
+##### 1.2.2.6°) Recherche de lignes qui accapareraient plus de 2% du traffic
+Répartition des validations par ligne
+```{r}
+StatsLignes = as.data.frame(table(unlist(df$LIGNE))) #recherche pour chaque linge du nombre total de validations
+StatsLignes[,2] = StatsLignes[,2]/length(df[,1])# passage en fréquences
+StatsLignes = arrange(StatsLignes,Freq)
+LignesPopulaires = subset(StatsLignes, Freq>0.02)
+LignesPopulaires
+```
+
+
+
+
+##### 1.2.2.7°) Recherche de arrêts qui accapareraient plus de 2% du traffic
+Répartition des validations par arrêt
+```{r}
+StatsArrets = as.data.frame(table(unlist(df$ARRET)))
+StatsArrets$nbMoyenValidationDansHeure = StatsArrets$Freq/(24*365) #Calcul du nombre moyen de validations par heure et par arrêt
+StatsArrets[,2] = StatsArrets[,2]/(length(df[,1]))
+StatsArrets = arrange(StatsArrets,desc(Freq)) #tri par ordre croissant
+ArretsPopulaires = subset(StatsArrets, Freq>0.02)
+ArretsPopulaires
+```
+
+On rajoute à StatsArrets des colonnes indiquant le nombre de validations par arrêt entre 5h et 23h59 sur chacun des blocs de 1h du 05/10/2019. Cela sera utilisé dans la partie 1.2.3 sur la cartographie.
+```{r}
+for (heure in 5:23){
+  complement = as.data.frame(table(unlist(df[hour(df$HORAIRE)==heure & df$DAY == as.Date("2019-10-05"),]$ARRET)))
+  names(complement)[names(complement)=="Freq"] <- paste0("nbValidationsA",heure,"h")
+  StatsArrets = merge(StatsArrets,complement, by.x = c("Var1"),by.y = c("Var1"),all=TRUE)
+}
+```
+
+
+
+##### 1.2.2.8°) Recherche des fréquences d'apparition des catégories tarifaires
+Répartition par catégorie tarifaire
+```{r}
+StatsCodeProduit = as.data.frame(table(unlist(df$CODEPRODUIT)))
+StatsCodeProduit[,2] = StatsCodeProduit[,2]/(length(df[,1]))
+StatsCodeProduit = arrange(StatsCodeProduit,desc(Freq)) #tri par ordre décroissant
+StatsCodeProduit
+```
+
+
+##### 1.2.2.9°) Analyse des jours spéciaux
+
+But : comparer la fréquentation quotidienne moyenne que le jour soit férié ou non et scolaire ou non.
+
+```{r}
+Scolaire = c(Ordinaire = length(which(df$SCOLAIRE==0 & df$FERIE==0, arr.ind=TRUE))/237,Ferie = length(which(df$SCOLAIRE==0 & df$FERIE==1, arr.ind=TRUE))/5)
+Vacances = c(Ordinaire = length(which(df$SCOLAIRE==1 & df$FERIE==0, arr.ind=TRUE))/115,Ferie = length(which(df$SCOLAIRE==1 & df$FERIE==1, arr.ind=TRUE))/8)
+```
+
+```{r}
+frequentationSuivantJour <- rbind(Scolaire, Vacances)
+barplot(frequentationSuivantJour,beside = TRUE, col = c("dodgerblue3", "lightgreen"),legend.text = c("Scolaire","Vacances"), main = "Fréquentation quotidienne moyenne suivant le type de jour", ylab = "Nombre moyen de validations quotidiennes")
+grid(nx = NA, ny = NULL, lty = 2, col = "gray", lwd = 1)
+```
+
+
+### 1.2.3°) Cartographie 
+
+```{r echo=FALSE}
+theme_set(theme_bw())
+```
+
+```{r echo=FALSE}
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(ggspatial)
+library(ggmap)
+library(osmdata)
+```
+
+
+
+```{r echo=FALSE}
+dfLignes = df[,c("ARRET","LIGNE")]
+dfLignes = dfLignes[!duplicated(dfLignes$ARRET),]
+dfArrets = df[,c("ARRET","Latitude","Longitude")]
+dfArrets = dfArrets[!duplicated(dfArrets$ARRET),]
+dfArrets = merge(dfArrets,StatsArrets[,-c(3)],by.x=c("ARRET"),by.y = c("Var1"))
+dfArrets = merge(dfArrets,dfLignes, by = c("ARRET"))
+```
+
+
+
+
+
+
+
+## 2°) Clustering
+
+
+```{r echo=FALSE}
+library(stringr)
+```
+
+### 2.1°) Création de blocs de 15mins pour la prédiction
+On va rassembler les validations dans des blocs de 15min pour pouvoir ensuite faire des prédictions sur la fréquentation dans ces blocs.
+```{r echo=FALSE}
+df$HORAIRE = floor_date(df$HORAIRE, "15 minutes")
+df$DATETIME = floor_date(df$DATETIME, "15 minutes")
+```
+
+
+### 2.2°) Tirage de la ligne 1 pour qu'on l'analyse
+Ici, on appelle df1, le tableau de données pour la ligne 69. C'est un exemple pour mettre en place le clustering avant de le faire sur toutes les données.
+```{r echo=FALSE}
+df69 = subset(df,df$LIGNE==StatsLignes$Var1[53])[,c("DATETIME","ARRET","BUS","IDENT","FERIE","TYPEJOUR","CODEPRODUIT","TYPETRANSACTION","SENS","SCOLAIRE")]
+```
+
+
+
+
+
+
+
+
+
+
+
+### 2.3°) Création d'un tableau standard pour décrire chaque bloc de 15mins
+
+#### Ajout des données temporelles
+On crée un tableau dfTemps décrivant les moments de la journée sur tous les jours de 2019 (DATETIME, WEEKDAY, DAYOFYEAR, DAY, MINUTEOFDAY,FERIE,VACANCES)
+```{r echo=FALSE}
+dfTemps = data.frame(DATETIME = seq(as_datetime("2019-01-01 00:00:00", format= "%Y-%m-%d %H:%M:%S"), by = "15 mins", length.out = 365*24*4))
+```
+
+```{r echo=FALSE}
+dfTemps$WEEKDAY = weekdays(dfTemps$DATETIME)
+dfTemps$DAYOFYEAR = yday(dfTemps$DATETIME)/365
+dfTemps$DAY = date(dfTemps$DATETIME)
+dfTemps$MINUTEOFDAY = (minute(dfTemps$DATETIME) + 60*hour(dfTemps$DATETIME))/(24*60)
+```
+
+```{r echo=FALSE}
+dfTemps$FERIE = as.integer(dfTemps$DAY %in% c(as.Date("2019-01-01"),as.Date("2019-04-21"),as.Date("2019-04-22"),as.Date("2019-05-01"),as.Date("2019-05-08"),as.Date("2019-05-30"),as.Date("2019-06-09"),as.Date("2019-06-10"),as.Date("2019-07-14"),as.Date("2019-08-15"),as.Date("2019-11-01"),as.Date("2019-11-11"),as.Date("2019-12-25")))
+```
+
+```{r echo=FALSE}
+dfTemps$VACANCES = as.integer(dfTemps$DAY %in% vacances)
+```
+
+On retire maintenant les blocs de 15mins arrivant à des moments où le service de transport est fermé. Dans tous les cas, ces blocs ne servent à rien car ils ne comporteront jamais aucune validation. Autant dire que la prédiction est facile dans ces cas.
+```{r echo=FALSE}
+dfTemps = dfTemps[dfTemps$MINUTEOFDAY<=1/24 | dfTemps$MINUTEOFDAY >= 4/24,]
+```
+
+#### Injection de données météo
+```{r echo=FALSE}
+dfMeteo <- read.csv("./données météo/export-toulon2019.csv", header = TRUE, sep= ";", na.strings = "")
+```
+
+```{r echo=FALSE}
+dfMeteo$DATE = date(dfMeteo$DATE)
+dfTemps = merge(dfMeteo[,c(1,8,19)],dfTemps,by.x=c("DATE"),by.y =c("DAY"))
+```
+
+
+
+
+
+### 2.4°) Injection des données de df69 dans df69complet
+```{r echo=FALSE}
+df69complet = dfTemps
+```
+
+```{r echo=FALSE}
+df69complet[,paste0("arret.",df69[!duplicated(df69$ARRET),]$ARRET)] = 0
+# df69complet[,df69[!duplicated(df69$SENS),]$SENS] = 0
+# df69complet[,df69[!duplicated(df69$TYPETRANSACTION),]$TYPETRANSACTION] = 0
+# df69complet[,df69[!duplicated(df69$CODEPRODUIT),]$CODEPRODUIT] = 0
+# df69complet[,paste(df69[!duplicated(df69$BUS),]$BUS)] = 0
+# df69complet[,paste(df69[!duplicated(df69$IDENT),]$IDENT)] = 0
+# df69complet$NBVALIDATIONS = 0
+```
+
+```{r echo=FALSE}
+for (k in 1:length(df69$DATETIME)){
+    df69complet[df69complet$DATETIME == df69$DATETIME[k],c(df69$ARRET[k],df69$SENS[k],df69$TYPETRANSACTION[k],df69$CODEPRODUIT[k],df69$BUS[k],df69$IDENT[k],"NBVALIDATIONS")] = df69complet[df69complet$DATETIME ==df69$DATETIME[k],c(df69$ARRET[k],df69$SENS[k],df69$TYPETRANSACTION[k],df69$CODEPRODUIT[k],df69$BUS[k],df69$IDENT[k],"NBVALIDATIONS")] + 1
+}
+```
+
+On one-hot encode les jours de la semaine pour pouvoir les analyser comme les autres variables. 
+```{r echo=FALSE}
+library(caret)
+dmy <- dummyVars(" ~ .", data = df69complet[,-c(1,4)])
+df69complet <- data.frame(predict(dmy, newdata = df69complet[,-c(1,4)]))
+head(df69complet)
+```
+
+
+
+
+### 2.5°) Création train, test
+```{r echo=FALSE}
+set.seed(5)
+split_dummy <- sample(c(rep(0, 0.7 * nrow(df69complet)),  # Create dummy for splitting
+                        rep(1, 0.3 * nrow(df69complet))))
+train <- df69complet[split_dummy == 0, ]   
+test <- df69complet[split_dummy == 1, ]   
+```
+
+### 2.6°) Clustering
+
+
+```{r echo=FALSE}
+library(factoextra)
+res.kmeans = kmeans(scale(train[,c(1,3,4,5,6,7,8,9,10,11,12,13)]), 22,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans, data = scale(train[,c(1,3,4,5,6,7,8,9,10,11,12,13)]),
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+
+```
+
+
+
+
+
+
+
+
+
+## 3°) KNN
+
+### 3.1°) Gestion du déséquilibre de classes (classe fréquente (0 validation) vs classe peu fréquente)
+
+```{r echo=FALSE}
+n0 = length(train[train$NBVALIDATIONS == 0,1])
+train_balanced = train[-which(train$NBVALIDATIONS == 0, arr.ind=TRUE)[sample.int(n0, size = floor(n0/1.02))],]
+```
+
+### 3.2°) Modélisation
+```{r echo=FALSE}
+library(class)
+testPredit = knn(scale(train_balanced[,c(1,3,4,5,6,7,8,9,10,11,12,13)]), scale(test[,c(1,3,4,5,6,7,8,9,10,11,12,13)]), cl=train_balanced[,c(66)], k = 8, prob=FALSE) 
+```
+
+```{r echo=FALSE}
+mean(testPredit!=test[,c(66)])
+```
+
+
+
+```{r echo=FALSE}
+confusionMatrix(factor(testPredit, levels=min(test[,c(66)]):max(test[,c(66)])), 
+      factor(test[,c(66)], levels=min(test[,c(66)]):max(test[,c(66)])))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Plus tard, en s'inspirant du code suivant, on pourra faire le lien avec des entreprises/restaurants/magasins avoisinants.
+```{r echo=FALSE}
+# q <- getbb("Toulon")%>%
+#       opq()%>%
+#        add_osm_feature("public_transport", "stop_position")
+# stationBusOSM <- osmdata_sf(q)
+```
+
+```{r echo=FALSE}
+# mad_map <- get_map(getbb("Toulon"),maptype = "toner-background")
+# #final map
+# ggmap(mad_map)+
+#   geom_sf(data=stationBusOSM$osm_points,
+#           inherit.aes =FALSE,
+#           colour="#238443",
+#           fill="#004529",
+#           alpha=.5,
+#           size=4,
+#           shape=21)+
+#   labs(x="",y="")
+```
+
+
+

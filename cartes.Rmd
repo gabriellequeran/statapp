@@ -1,0 +1,240 @@
+---
+title: "cartes"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+library(plyr)
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(sf)
+library(caret)
+library(class)
+library(factoextra)
+library(ggmap)
+library(osmdata)
+library(geosphere)
+```
+
+
+```{r echo=FALSE}
+mad_map <- get_stamenmap(c(left = 5.78, bottom = 43.02, right = 6.22, top = 43.2), maptype = "toner-hybrid", zoom = 15) 
+ggmap(mad_map)
+```
+
+
+# 1°) Fréquentation
+
+```{r echo=FALSE}
+dfLignes = df[,c("ARRET","LIGNE")]
+dfLignes = dfLignes[!duplicated(dfLignes$ARRET),]
+dfArrets = df[,c("ARRET","Latitude","Longitude")]
+dfArrets = dfArrets[!duplicated(dfArrets$ARRET),]
+dfArrets = merge(dfArrets,StatsArrets[,-c(3)],by.x=c("ARRET"),by.y = c("Var1"))
+dfArrets = merge(dfArrets,dfLignes, by = c("ARRET"))
+```
+
+Représentons d'abord sur une carte la fréquentation moyenne des divers arrêts sur l'année. Pour cela, on fait des points de taille proportionnelle à la fréquentation à chaque arrêt.
+```{r echo=FALSE}
+ggmap(mad_map)+
+  geom_point(data=dfArrets, aes(x=Longitude, y=Latitude),
+          colour="#003399",
+          fill="#003399",
+          alpha=.4,
+          size=dfArrets$Freq*20,
+          shape=21)+
+   labs(x="",y="")+
+  ggtitle("Carte de la fréquentation moyenne des arrêts sur une année")
+```
+
+
+Maintenant, on suit la même méthode pour représenter les cartes des fréquentations des arrêts le 05/10/2019 pour tous les blocs de 1h compris entre 5h et 23h59.
+
+```{r echo=FALSE}
+valMin = min(na.omit(dfArrets[,seq(5,23)]))
+valMax = max(na.omit(dfArrets[,seq(5,23)]))
+
+for (k in c(5,9,14,17,21)){
+myplot <- ggmap(mad_map)+
+  geom_point(data=dfArrets, aes(x=Longitude, y=Latitude, color = dfArrets[,c(k)]),
+          alpha=.8,
+          size=0.1)+
+   labs(x="",y="")+scale_colour_gradientn(colours = rainbow(5),limits = c(0.,valMax))+
+  ggtitle(paste("Carte de la fréquentation le 5 octobre 2019 à",k,"h"))
+ggsave(paste("carte de la fréquentation des arrêts, à",k,"h le 05 octobre 2019.png"))
+}
+
+```
+
+
+
+
+
+
+
+# 2° Représentation des k-means
+```{r echo=FALSE}
+dfMapGroupe = merge(dfGroupesKMEANS,dfArrets[,c(1,2,3)],by.x = c("ARRET"),by.y = c("ARRET"))
+```
+
+```{r echo=FALSE}
+dfMapGroupeTousTypesJours = merge(dfKMEANTousTypesJours,dfArrets[,c(1,2,3)],by.x = c("ARRET"),by.y = c("ARRET"))
+```
+
+```{r echo=FALSE}
+colors <- c("2" = "#CF0A1D", "4" = "#048B9A", "3" = "black", "1"="#87E990")
+ggmap(mad_map)+
+  geom_point(data=dfMapGroupeTousTypesJours, mapping = aes(x=Longitude, y=Latitude,color = factor(GR)),
+          size=0.1, alpha = 0.8
+          )+scale_color_manual(values = colors)+  geom_text(data=dfMapGroupeTousTypesJours,aes(x=Longitude, y=Latitude,label = as.factor(ARRET)), size = 0.2,hjust=0)+
+   labs(x="",y="")
+ggsave("GR.pdf")
+```
+
+
+```{r echo=FALSE}
+colors <- c("2" = "#CF0A1D", "4" = "#048B9A", "3" = "black", "1"="#87E990")
+ggmap(mad_map)+
+  geom_point(data=dfMapGroupe, mapping = aes(x=Longitude, y=Latitude,color = factor(GR4)),
+          size=0.1, alpha = 0.8
+          )+scale_color_manual(values = colors)+  geom_text(data=dfMapGroupe,aes(x=Longitude, y=Latitude,label = as.factor(ARRET)), size = 0.2,hjust=0)+
+   labs(x="",y="")
+ggsave("GR41.pdf")
+```
+
+```{r echo=FALSE}
+colors <- c("4" ="#CF0A1D" , "2" = "#048B9A", "3" = "black", "1"="#87E990")
+ggmap(mad_map)+
+  geom_point(data=dfMapGroupe, aes(x=Longitude, y=Latitude,color = factor(GR3)),
+          size=0.1, alpha = 0.8
+          )+scale_color_manual(values = colors)+geom_text(data=dfMapGroupe,aes(x=Longitude, y=Latitude,label = as.factor(ARRET)), size = 0.2,hjust=0)+
+   labs(x="",y="")
+ggsave("GR3.pdf")
+```
+```{r echo=FALSE}
+colors <- c("1" = "#048B9A", "3" = "#CF0A1D", "4" = "#87E990", "2"="black")
+ggmap(mad_map)+
+  geom_point(data=dfMapGroupe, aes(x=Longitude, y=Latitude,color = factor(GR2)),
+          size=0.1, alpha = 0.8
+          )+scale_color_manual(values = colors)+geom_text(data=dfMapGroupe,aes(x=Longitude, y=Latitude,label = as.factor(ARRET)), size = 0.2,hjust=0)+
+   labs(x="",y="")
+ggsave("GR2.pdf")
+```
+
+```{r echo=FALSE}
+colors <- c("3" = "#048B9A", "2" = "black", "1" = "#87E990", "4"="#CF0A1D")
+ggmap(mad_map)+
+  geom_point(data=dfMapGroupe, aes(x=Longitude, y=Latitude,color = as.factor(GR1)),
+          size=0.1, alpha = 0.8
+          )+scale_color_manual(values = colors)+geom_text(data=dfMapGroupe,aes(x=Longitude, y=Latitude,label = as.factor(ARRET)), size = 0.2,hjust=0)+
+   labs(x="",y="")
+ggsave("GR11.pdf")
+```
+
+
+
+
+
+
+```{r echo=FALSE}
+for (k in c("theatre","cinema","bar","cafe","pub","restaurant","fastfood","school","college","university","marketplace","doctors","hospital")){
+  q <- getbb("Toulon")%>%
+      opq()%>%
+       add_osm_feature("amenity", k)
+  assign(paste0(k,"OSM"),data.frame(st_coordinates(osmdata_sf(q)$osm_points)))
+}
+
+```
+
+```{r echo=FALSE}
+q <- getbb("Toulon")%>%
+      opq()%>%
+       add_osm_feature("tourism","museum")
+museumOSM <- data.frame(st_coordinates(osmdata_sf(q)$osm_points))
+```
+
+
+```{r echo=FALSE}
+q <- getbb("Toulon")%>%
+      opq()%>%
+       add_osm_feature("shop")
+shopOSM <- data.frame(st_coordinates(osmdata_sf(q)$osm_points))
+```
+
+```{r echo=FALSE}
+q <- getbb("Toulon")%>%
+      opq()%>%
+       add_osm_feature("office")
+officeOSM <- data.frame(st_coordinates(osmdata_sf(q)$osm_points))
+```
+
+
+```{r echo=FALSE}
+dfProximiteArret = data.frame(labels)
+arretsA150m <- function(lieux){
+  
+  listearrets = c()
+  for( k in 1:930){
+    i=1
+    while (i <= length(lieux$X)){
+      if (distHaversine(lieux[i,], as.numeric(dfArrets[k,c(3,2)])) < 150.){
+        i = length(lieux$X)
+        listearrets = c(listearrets,dfArrets$ARRET[k])
+      }
+      i=i+1
+    }
+  }
+  return (listearrets)
+  
+}
+arrets150mEcole = arretsA150m(schoolOSM)
+arrets150mBureaux = arretsA150m(officeOSM)
+arrets150mMagasins = arretsA150m(shopOSM)
+arrets150mRestaurants = arretsA150m(rbind(rbind(restaurantOSM,cafeOSM),barOSM))
+arrets150mCinema = arretsA150m(cinemaOSM)
+```
+
+```{r echo=FALSE}
+histoLieu <- function(GR,dfKMEANS){
+  dfLieuxPresGR = data.frame(Lieu = c(), Groupe = c(), Proportion = c())
+for (k in 1:4){
+  dfLieuxPresGR = rbind(dfLieuxPresGR,data.frame(Lieu = c("Ecole","Bureaux","Magasins","Restaurants","Cinema"),Groupe = c(k,k,k,k,k), Proportion = c(mean(dfKMEANS[dfKMEANS[,c(GR)] == k,]$ARRET %in% arrets150mEcole),mean(dfKMEANS[dfKMEANS[,c(GR)] == k,]$ARRET %in% arrets150mBureaux),mean(dfKMEANS[dfKMEANS[,c(GR)] == k,]$ARRET %in% arrets150mMagasins),mean(dfKMEANS[dfKMEANS[,c(GR)] == k,]$ARRET%in% arrets150mRestaurants),mean(dfKMEANS[dfKMEANS[,c(GR)] == k,]$ARRET %in% arrets150mCinema))))
+}
+
+df_cumsum <- ddply(dfLieuxPresGR, "Groupe",
+                   transform, label_ypos=cumsum(Proportion))
+
+ggplot(data=df_cumsum, aes(x=Groupe, y=Proportion, fill=Lieu)) +
+  geom_bar(stat="identity")+
+  scale_fill_brewer(palette="Set2")+
+  theme_minimal()+ggtitle(paste("Groupe",GR))
+}
+
+```
+
+```{r echo=FALSE}
+histoLieu("GR",dfKMEANTousTypesJours)
+```
+
+```{r echo=FALSE}
+histoLieu("GR1",dfGroupesKMEANS)
+```
+
+```{r echo=FALSE}
+histoLieu("GR2",dfGroupesKMEANS)
+```
+
+```{r echo=FALSE}
+histoLieu("GR3",dfGroupesKMEANS)
+```
+
+```{r echo=FALSE}
+histoLieu("GR4",dfGroupesKMEANS)
+```
