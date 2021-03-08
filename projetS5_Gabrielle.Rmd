@@ -1,0 +1,304 @@
+---
+title: "projetS5"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+library(dplyr)
+library(magrittr)
+library(lubridate)
+library(ggplot2)
+library(tidyverse)
+library(sf)
+library(caret)
+library(class)
+library(factoextra)
+library(keras)
+library(dtwclust)
+```
+
+
+# Projet - Semaine 5
+
+# But : clustering sur les arrêts
+
+On divise l'analyse en 4 parties : 
+- Jour de semaine + pas férié + pas vacances : dfTypeJour4
+- Jour de semaine + pas férié + vacances : dfTypeJour3
+- Samedi + pas férié : dfTypeJour2
+- Dimanche + férié : dfTypeJour1
+```{r echo=FALSE}
+dfTypeJour1 = subset.data.frame(df,df$TYPEJOUR == "Dimanche" | df$FERIE == 1)[,c("ARRET","HORAIRE")]
+dfTypeJour1$HORAIRE = hour(dfTypeJour1$HORAIRE)
+dfTypeJour1 = dfTypeJour1 %>% count(ARRET, HORAIRE)
+```
+
+```{r echo=FALSE}
+dfTypeJour2 = subset.data.frame(df,df$TYPEJOUR == "Samedi" & df$FERIE == 0)[,c("ARRET","HORAIRE")]
+dfTypeJour2$HORAIRE = hour(dfTypeJour2$HORAIRE)
+dfTypeJour2 = dfTypeJour2 %>% count(ARRET, HORAIRE)
+```
+
+
+
+```{r echo=FALSE}
+dfTypeJour3 = subset.data.frame(df,df$TYPEJOUR %in% c("Lundi","Mardi","Mercredi","Jeudi","Vendredi") & df$FERIE == 0 & df$SCOLAIRE == 1)[,c("ARRET","HORAIRE")]
+dfTypeJour3$HORAIRE = hour(dfTypeJour3$HORAIRE)
+dfTypeJour3 = dfTypeJour3 %>% count(ARRET, HORAIRE)
+```
+
+
+```{r echo=FALSE}
+dfTypeJour4 = subset.data.frame(df,df$TYPEJOUR %in% c("Lundi","Mardi","Mercredi","Jeudi","Vendredi") & df$FERIE == 0 & df$SCOLAIRE == 0)[,c("ARRET","HORAIRE")]
+dfTypeJour4$HORAIRE = hour(dfTypeJour4$HORAIRE)
+dfTypeJour4 = dfTypeJour4 %>% count(ARRET, HORAIRE)
+```
+
+```{r echo=FALSE}
+labels = StatsArrets$Var1
+heures = c(0,1,seq(5,23))
+```
+
+```{r echo=FALSE}
+echelle <- function(df){
+  for (k in 1:length(df[1,])){
+    maximum = max(na.omit(df[,k]))
+    minimum = min(na.omit(df[,k]))
+    df[,k] = (df[,k]-minimum)/(maximum-minimum)
+  }
+  return(df)
+}
+```
+
+```{r echo=FALSE}
+df1 = data.frame(matrix(0, ncol = 24, nrow = 930))
+rownames(df1) <- labels
+for (k in 1:length(dfTypeJour1[,1])){
+  df1[c(dfTypeJour1$ARRET[k]),dfTypeJour1$HORAIRE[k]+1]=dfTypeJour1$n[k]
+}
+dfTypeJour1 = df1
+df1 <- echelle(df1)
+df1 = df1[ , colSums(is.na(df1)) < nrow(df1)]
+
+df2 = data.frame(matrix(0, ncol = 24, nrow = 930))
+rownames(df2) <- labels
+for (k in 1:length(dfTypeJour2[,1])){
+  df2[c(dfTypeJour2$ARRET[k]),dfTypeJour2$HORAIRE[k]+1]=dfTypeJour2$n[k]
+}
+dfTypeJour2 = df2
+df2 <- echelle(df2)
+df2 = df2[ , colSums(is.na(df2)) < nrow(df2)]
+
+df3 = data.frame(matrix(0, ncol = 24, nrow = 930))
+rownames(df3) <- labels
+for (k in 1:length(dfTypeJour3[,1])){
+  df3[c(dfTypeJour3$ARRET[k]),dfTypeJour3$HORAIRE[k]+1]=dfTypeJour3$n[k]
+}
+dfTypeJour3 = df3
+df3 <- echelle(df3)
+df3 = df3[ , colSums(is.na(df3)) < nrow(df3)]
+
+df4 = data.frame(matrix(0, ncol = 24, nrow = 930))
+rownames(df4) <- labels
+for (k in 1:length(dfTypeJour4[,1])){
+  df4[c(dfTypeJour4$ARRET[k]),dfTypeJour4$HORAIRE[k]+1]=dfTypeJour4$n[k]
+}
+dfTypeJour4 = df4
+df4 <- echelle(df4)
+df4 = df4[ , colSums(is.na(df4)) < nrow(df4)]
+
+```
+
+```{r echo=FALSE}
+dataAClusterParArret = cbind(df1,df2,df3,df4)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r echo=FALSE}
+res.kmeans = kmeans(dataAClusterParArret, 4,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans, data = dataAClusterParArret,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+```
+```{r echo=FALSE}
+dfTousTypesJours = cbind(dfTypeJour1,dfTypeJour2,dfTypeJour3,dfTypeJour4)
+dfKMEANTousTypesJours = data.frame(ARRET = labels,GR = res.kmeans$cluster)
+ggplot(data.frame(t= seq(0,95),Y1=colMeans(data.frame(dfTousTypesJours)[labels %in% dfKMEANTousTypesJours[dfKMEANTousTypesJours$GR == 1,]$ARRET,]),Y2=colMeans(data.frame(dfTousTypesJours)[labels %in% dfKMEANTousTypesJours[dfKMEANTousTypesJours$GR == 2,]$ARRET,]),Y3=colMeans(data.frame(dfTousTypesJours)[labels %in% dfKMEANTousTypesJours[dfKMEANTousTypesJours$GR == 3,]$ARRET,]),Y4=colMeans(data.frame(dfTousTypesJours)[labels %in% dfKMEANTousTypesJours[dfKMEANTousTypesJours$GR == 4,]$ARRET,])),aes(x = t, y = value)) + 
+                    geom_line(aes(y=Y1),color="#87E990")+geom_line(aes(y=Y2),color="#CF0A1D")+geom_line(aes(y=Y3),color="black")+geom_line(aes(y=Y4),color="#048B9A")+ggtitle("Moyennes de trajets/h suivant les clusters")
+
+```
+
+
+
+
+```{r echo=FALSE}
+res.kmeans1 = kmeans(df1, 4,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans1, data = df1,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+```
+
+```{r echo=FALSE}
+res.kmeans2 = kmeans(df2, 4,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans2, data = df2,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+
+```
+
+```{r echo=FALSE}
+res.kmeans3 = kmeans(df3, 4,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans3, data = df3,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+
+```
+
+```{r echo=FALSE}
+res.kmeans4 = kmeans(df4, 4,  iter.max = 100, nstart = 1)
+fviz_cluster(res.kmeans4, data = df4,
+             geom = "point",
+             ellipse.type = "convex",
+             ggtheme = theme_bw()
+             )
+
+```
+```{r echo=FALSE}
+dfGroupesKMEANS = data.frame(ARRET = labels, GR1 = res.kmeans1$cluster, GR2 = res.kmeans2$cluster, GR3 = res.kmeans3$cluster, GR4 = res.kmeans4$cluster)
+```
+
+```{r echo=FALSE}
+ggplot(data.frame(t= seq(0,23),Y1=colMeans(data.frame(dfTypeJour1)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR1 == 1,]$ARRET,]),Y2=colMeans(data.frame(dfTypeJour1)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR1 == 2,]$ARRET,]),Y3=colMeans(data.frame(dfTypeJour1)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR1 == 3,]$ARRET,]),Y4=colMeans(data.frame(dfTypeJour1)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR1 == 4,]$ARRET,])),aes(x = t, y = value)) + 
+                    geom_line(aes(y=Y1),color="#87E990")+geom_line(aes(y=Y2),color="black")+geom_line(aes(y=Y3),color="#048B9A")+geom_line(aes(y=Y4),color="#CF0A1D")+ggtitle("Moyennes de trajets/h dans GR1 suivant les clusters")
+```
+```{r echo=FALSE}
+ggplot(data.frame(t= seq(0,23),Y1=colMeans(data.frame(dfTypeJour2)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR2 == 1,]$ARRET,]),Y2=colMeans(data.frame(dfTypeJour2)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR2 == 2,]$ARRET,]),Y3=colMeans(data.frame(dfTypeJour2)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR2 == 3,]$ARRET,]),Y4=colMeans(data.frame(dfTypeJour2)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR2 == 4,]$ARRET,])),aes(x = t, y = value)) + 
+                    geom_line(aes(y=Y1),color="#048B9A")+geom_line(aes(y=Y2),color="black")+geom_line(aes(y=Y3),color="#CF0A1D")+geom_line(aes(y=Y4),color="#87E990")+ggtitle("Moyennes de trajets/h dans GR2 suivant les clusters")
+
+```
+
+```{r echo=FALSE}
+ggplot(data.frame(t= seq(0,23),Y1=colMeans(data.frame(dfTypeJour3)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR3 == 1,]$ARRET,]),Y2=colMeans(data.frame(dfTypeJour3)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR3 == 2,]$ARRET,]),Y3=colMeans(data.frame(dfTypeJour3)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR3 == 3,]$ARRET,]),Y4=colMeans(data.frame(dfTypeJour3)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR3 == 4,]$ARRET,])),aes(x = t, y = value)) +
+                    geom_line(aes(y=Y1),color="#87E990")+geom_line(aes(y=Y2),color="#048B9A")+geom_line(aes(y=Y3),color="black")+geom_line(aes(y=Y4),color="#CF0A1D")+ggtitle("Moyennes de trajets/h dans GR3 suivant les clusters")
+```
+
+```{r echo=FALSE}
+ggplot(data.frame(t= seq(0,23),Y1=colMeans(data.frame(dfTypeJour4)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR4 == 1,]$ARRET,]),Y2=colMeans(data.frame(dfTypeJour4)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR4 == 2,]$ARRET,]),Y3=colMeans(data.frame(dfTypeJour4)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR4 == 3,]$ARRET,]),Y4=colMeans(data.frame(dfTypeJour4)[labels %in% dfGroupesKMEANS[dfGroupesKMEANS$GR4 == 4,]$ARRET,])),aes(x = t, y = value)) + 
+                    geom_line(aes(y=Y1),color="#87E990")+geom_line(aes(y=Y2),color="#CF0A1D")+geom_line(aes(y=Y3),color="black")+geom_line(aes(y=Y4),color="#048B9A")+ggtitle("Moyennes de trajets/h dans GR4 suivant les clusters")
+
+```
+
+```{r echo=FALSE}
+wssplot <- function(data, nc=15, seed=123){
+               wss <- (nrow(data)-1)*sum(apply(data,2,var))
+               for (i in 2:nc){
+                    set.seed(seed)
+                    wss[i] <- sum(kmeans(data, centers=i)$withinss)}
+               df = data.frame(k = c(1:nc), Sum_of_squares_within_a_group = wss)
+               ggplot(df, aes(x = k, y = Sum_of_squares_within_a_group)) + 
+                    geom_point(color="red") +ggtitle ("Elbow method to find k")}
+
+wssplot(dataAClusterParArret , nc = 60)
+```
+
+
+```{r echo=FALSE}
+pcclust= tsclust(df1, k = c(2:30), type = "partitional",
+                 distance = "sbd", centroid = "shape",
+                 seed = 3247, trace = TRUE,
+                 control = partitional_control(nrep = 5L))
+cviResultats = sapply(pcclust, cvi, b = labels)
+courbesEnCoude = sapply(pcclust, function(cl) { sum(cl@cldist ^ 2) })
+```
+
+
+```{r echo=FALSE}
+dfCourbesEnCoude = data.frame(k = seq(2,30), Repetition1 = courbesEnCoude[seq(1,141,5)], Repetition2 = courbesEnCoude[seq(2,142,5)], Repetition3 = courbesEnCoude[seq(3,143,5)],Repetition4 = courbesEnCoude[seq(4,144,5)],Repetition5 = courbesEnCoude[seq(5,145,5)])
+
+dfCourbesEnCoude <- dfCourbesEnCoude %>%
+  dplyr::select(k, Repetition1, Repetition2,Repetition3,Repetition4,Repetition5) %>%
+  gather(key = "variable", value = "value", -k)
+
+
+ggplot(dfCourbesEnCoude, aes(x = k, y = value)) + 
+  geom_point(aes(color = variable)) + 
+  scale_color_manual(values = c("#007FFF","#1B019B","#F0C300","#01D758","#A91101"))+
+  ggtitle("Sum of squares within a group")
+```
+
+```{r echo=FALSE}
+dfCVI_VI = data.frame(k = seq(2,30), Repetition1 = cviResultats[5,seq(1,141,5)], Repetition2 = cviResultats[5,seq(2,142,5)], Repetition3 = cviResultats[5,seq(3,143,5)],Repetition4 = cviResultats[5,seq(4,144,5)],Repetition5 = cviResultats[5,seq(5,145,5)])
+
+dfCVI_VI <- dfCVI_VI %>%
+  dplyr::select(k, Repetition1, Repetition2,Repetition3,Repetition4,Repetition5) %>%
+  gather(key = "variable", value = "value", -k)
+
+
+ggplot(dfCVI_VI, aes(x = k, y = value)) + 
+  geom_point(aes(color = variable)) + 
+  scale_color_manual(values = c("#007FFF","#1B019B","#F0C300","#01D758","#A91101"))+
+  ggtitle("Variation of information (Meila (2003))")
+```
+
+```{r echo=FALSE}
+pcclust1= tsclust(df1, k = 8, type = "partitional",
+                 distance = "sbd", centroid = "shape",
+                 seed = 3247, trace = TRUE,
+                 control = partitional_control(nrep = 5L))
+plot(pcclust1[[which.min(sapply(pcclust1, cvi, b = labels, type = "VI"))]])
+classement1 = data.frame(ARRET = labels, CLUSTER =pcclust1[[which.min(sapply(pcclust1, cvi, b = labels, type = "VI"))]]@cluster)
+```
+
+```{r echo=FALSE}
+pcclust2= tsclust(df2, k = 8, type = "partitional",
+                 distance = "sbd", centroid = "shape",
+                 seed = 3247, trace = TRUE,
+                 control = partitional_control(nrep = 5L))
+plot(pcclust2[[which.min(sapply(pcclust2, cvi, b = labels, type = "VI"))]])
+classement2 = data.frame(ARRET = labels, CLUSTER =pcclust2[[which.min(sapply(pcclust2, cvi, b = labels, type = "VI"))]]@cluster)
+```
+
+```{r echo=FALSE}
+pcclust3= tsclust(df3, k = 8, type = "partitional",
+                 distance = "sbd", centroid = "shape",
+                 seed = 3247, trace = TRUE,
+                 control = partitional_control(nrep = 5L))
+plot(pcclust3[[which.min(sapply(pcclust3, cvi, b = labels, type = "VI"))]])
+classement3 = data.frame(ARRET = labels, CLUSTER =pcclust3[[which.min(sapply(pcclust3, cvi, b = labels, type = "VI"))]]@cluster)
+```
+
+```{r echo=FALSE}
+pcclust4= tsclust(df4, k = 8, type = "partitional",
+                 distance = "sbd", centroid = "shape",
+                 seed = 3247, trace = TRUE,
+                 control = partitional_control(nrep = 5L))
+plot(pcclust4[[which.min(sapply(pcclust4, cvi, b = labels, type = "VI"))]])
+classement4 = data.frame(ARRET = labels, CLUSTER =pcclust4[[which.min(sapply(pcclust4, cvi, b = labels, type = "VI"))]]@cluster)
+```
